@@ -1,0 +1,12 @@
+.ipynb_checkpoints/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+__pycache__/
+dist/
+data/
+checkpoints/
+*.nii
+*.nii.gz
+docs/research/

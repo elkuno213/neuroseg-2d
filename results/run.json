@@ -1,0 +1,30 @@
+{
+  "batch_size": 16,
+  "best_epoch": 10,
+  "best_validation_loss": 0.3299564731962703,
+  "data_dir": "/content/data/preprocessed",
+  "device": "cuda",
+  "epochs": 5,
+  "learning_rate": 0.0001,
+  "num_parameters": 31036481,
+  "resume_checkpoint": "/content/checkpoints/runs/2026-11-18_17-18-56/latest.pt",
+  "seed": 42,
+  "test_metrics": {
+    "loss": 0.33404853799079776,
+    "patient": {
+      "dice": 0.7303704757832614,
+      "iou": 0.6129902651022308,
+      "num_patients": 42,
+      "precision": 0.6967949729695826,
+      "recall": 0.8537500409733558
+    },
+    "slice": {
+      "dice": 0.5306613431907715,
+      "iou": 0.46442432422091673,
+      "num_slices": 6048,
+      "precision": 0.5706433413313842,
+      "recall": 0.7679021128822001
+    }
+  },
+  "threshold": 0.5
+}
