@@ -1,0 +1,37 @@
+[project]
+name = "neuroseg-2d"
+version = "1.0.0"
+description = "2D U-Net brain MRI tumor segmentation with BraTS data"
+authors = [
+    { name = "Vu Hoi HUYNH", email = "vuhoi.huynh@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib",
+    "nibabel",
+    "numpy",
+    "scikit-learn",
+    "torch",
+    "tqdm",
+]
+
+[build-system]
+requires = ["uv_build<0.11"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel",
+    "ipywidgets",
+    "nilearn",
+    "pytest",
+    "ruff",
+    "ty",
+]
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-markers", "--disable-plugin-autoload"]
+testpaths = ["tests"]
+
+[tool.ty.environment]
+root = ["src"]
