@@ -57,7 +57,7 @@ The positive weight $w$ defaults to 2. Tversky pools soft counts across one batc
 with $TP=\sum p_i y_i$, $FP=\sum p_i(1-y_i)$, $FN=\sum(1-p_i)y_i$ and $\epsilon=10^{-6}$:
 
 $$
-L_{Tversky} = 1 - \frac{TP + \epsilon}{TP + 0.3FP + 0.7FN + \epsilon}
+L_{Tversky} = 1 - \frac{TP + \epsilon}{TP + 0.15FP + 0.85FN + \epsilon}
 $$
 
 For an empty target batch, $L_{Tversky}=0$ and BCE still penalizes false positives. The full objective is

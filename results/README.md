@@ -1,7 +1,7 @@
 # Published results
 
-This snapshot contains the best validation checkpoint after 12 completed epochs.
-Training continues; these are interim results.
+Training completed 100 epochs. The selected model is epoch 64, with the lowest validation
+loss in the final loss configuration. All reported metrics use threshold 0.5.
 
 ## Run configuration
 
@@ -11,37 +11,52 @@ Training continues; these are interim results.
 | Preprocessed shape | 240 × 240 × 144 |
 | Voxel spacing | 1 × 1 × 1 mm |
 | Model | Binary 2D U-Net; 31,036,481 parameters |
-| Optimizer | AdamW; initial learning rate 0.00003; weight decay 0.00001 |
+| Optimizer | AdamW; final-stage learning rate 0.000001; weight decay 0.00001 |
 | Scheduler | ReduceLROnPlateau; factor 0.5, patience 1, minimum rate 0.000001 |
-| Loss | Equal Tversky + BCE; FP weight 0.3, FN weight 0.7, positive BCE weight 2 |
+| Final loss | Equal Tversky + BCE; FP weight 0.15, FN weight 0.85, positive BCE weight 2 |
 | Batch size / seed | 16 / 42 |
-| Epochs | 12 cumulative; current continuation completed 2 after epoch 10 |
-| Selected checkpoint | `best.pt`, epoch 12, lowest validation loss |
-| Resume checkpoint | `latest.pt`, completed epoch 12 |
-| Learning rate at selected epoch | 0.000015 |
-| Validation loss | 0.088641 |
+| Epochs | 100 cumulative; 70 in the final loss configuration |
+| Selected checkpoint | `best.pt`, epoch 64, lowest final-stage validation loss |
+| Resume checkpoint | `latest.pt`, completed epoch 100 |
+| Learning rate at selected epoch | 0.000001 |
+| Validation loss | 0.072894 |
 | Prediction threshold | 0.50 |
+
+`metrics.json` and `metrics.png` cover epochs 1–100. `run.json` records the final configuration
+and its 70 epochs, numbered 31–100. Both checkpoint files are available locally and ignored by Git.
+
+| Epochs | Tversky FP weight | Tversky FN weight |
+| --- | ---: | ---: |
+| 1–15 | 0.30 | 0.70 |
+| 16–30 | 0.20 | 0.80 |
+| 31–100 | 0.15 | 0.85 |
+
+Each loss change retained model weights and reset the optimizer, scaler, scheduler and best-loss
+tracking. Loss values across these stages are not directly comparable; patient splits stayed fixed.
 
 ![Training and validation metrics](metrics.png)
 
 ## Validation and test metrics
 
-Validation values come from epoch 12 at threshold 0.5. Test evaluation for this checkpoint is pending;
-previous checkpoint test scores and comparison images are not included.
-
-Each row keeps its own averaging scope; slice and patient scores are not interchangeable. Saved JSON
-keeps total slice and patient counts but omits per-metric valid-value counters.
+Both splits were evaluated with the selected epoch-64 model. Patient scores average metrics
+computed over each patient's volume; slice scores average individual slices.
 
 | Split | Scope | Dice | IoU | Recall | Precision |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Validation | Slice | 0.641761 | 0.570804 | 0.803531 | 0.682759 |
-| Validation | Patient | 0.836463 | 0.733892 | 0.892981 | 0.804487 |
-| Test | Slice | Pending | Pending | Pending | Pending |
-| Test | Patient | Pending | Pending | Pending | Pending |
+| Validation | Slice | 0.673384 | 0.594826 | 0.842177 | 0.680093 |
+| Validation | Patient | 0.842753 | 0.737808 | 0.926838 | 0.784222 |
+| Test | Slice | 0.663546 | 0.586830 | 0.845390 | 0.665887 |
+| Test | Patient | 0.856881 | 0.757431 | 0.936557 | 0.802112 |
 
-Validation requirements use strict comparisons on unrounded values:
+Patient-wise validation precision passes the project requirement; recall remains below target.
+Checks use strict comparisons on unrounded values.
 
-| Scope | Recall > 0.95 | Precision > 0.70 |
-| --- | --- | --- |
-| Slice | FAIL | FAIL |
-| Patient | FAIL | PASS |
+| Recall > 0.95 | Precision > 0.70 |
+| --- | --- |
+| FAIL | PASS |
+
+The comparison images show predictions from the same checkpoint on validation and test samples.
+
+![Validation comparisons](validation_comparison.png)
+
+![Test comparisons](test_comparison.png)
