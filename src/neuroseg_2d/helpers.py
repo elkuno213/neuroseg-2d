@@ -57,6 +57,8 @@ def _calculate_metrics(
             raise ValueError(f"{name} has no defined values")
         metrics[name] = float((num[valid] / den[valid]).mean().item())
 
+    # Include mean voxel counts over every unit, including empty slices or patients.
+    metrics.update(tp=tp.mean().item(), fp=fp.mean().item(), fn=fn.mean().item())
     return metrics
 
 
@@ -179,7 +181,7 @@ def save_report(
     run_dir: Path,
     report: dict[str, object],
 ) -> None:
-    """Write run configuration and final results."""
+    """Write run configuration and any completed results."""
     if set(report) != set(REPORT_FIELDS):
         raise ValueError(f"Report must contain fields {REPORT_FIELDS}")
 

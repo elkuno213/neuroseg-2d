@@ -45,24 +45,25 @@ Raw files remain unchanged. Prepared FLAIR tensors use `float32`; masks remain b
 ## Model and training
 
 The model processes one axial FLAIR slice at a time and predicts a tumor score for each pixel.
-Training uses AdamW, mixed precision on CUDA, and equal Dice and BCE loss weights.
+Training uses AdamW, mixed precision on CUDA, and equal Tversky and BCE loss weights.
 
 For logits $z_i$, probabilities $p_i = \sigma(z_i)$, binary targets $y_i$, and batch pixel count $N$:
 
 $$
-L_{BCE} = -\frac{1}{N}\sum_i\left[y_i\log(p_i) + (1-y_i)\log(1-p_i)\right]
+L_{BCE} = -\frac{1}{N}\sum_i\left[w y_i\log(p_i) + (1-y_i)\log(1-p_i)\right]
 $$
 
-Dice pools overlap across every pixel in one batch, with $\epsilon = 10^{-6}$:
+The positive weight $w$ defaults to 2. Tversky pools soft counts across one batch,
+with $TP=\sum p_i y_i$, $FP=\sum p_i(1-y_i)$, $FN=\sum(1-p_i)y_i$ and $\epsilon=10^{-6}$:
 
 $$
-L_{Dice} = 1 - \frac{2\sum_i p_i y_i + \epsilon}{\sum_i p_i + \sum_i y_i + \epsilon}
+L_{Tversky} = 1 - \frac{TP + \epsilon}{TP + 0.3FP + 0.7FN + \epsilon}
 $$
 
-For an empty target batch, $L_{Dice}=0$ and BCE still penalizes false positives. The full objective is
-$L = 0.5\,(L_{BCE}+L_{Dice})$.
+For an empty target batch, $L_{Tversky}=0$ and BCE still penalizes false positives. The full objective is
+$L = 0.5\,(L_{BCE}+L_{Tversky})$. Dice remains an evaluation metric.
 
-Patients are split into 75% training, 12.5% validation, and 12.5% test with seed 42. Grade proportions
+Patients are split into 80% training, 10% validation, and 10% test with seed 42. Grade proportions
 are preserved, and all slices from one patient stay together. Each training epoch shuffles patients,
 then their slices, while validation and test order remain fixed.
 
@@ -75,6 +76,9 @@ uv run python -m neuroseg_2d.train \
     --epochs 10 --learning-rate 1e-4 --batch-size 16 --threshold 0.5
 ```
 
+The scheduler halves the learning rate after two consecutive non-improving validation checks,
+down to `1e-6`. `--learning-rate` sets the starting rate for fresh training; resuming restores it.
+
 Resume for 5 additional epochs:
 
 ```bash
@@ -86,13 +90,13 @@ uv run python -m neuroseg_2d.train \
 ```
 
 Runs are saved under `<checkpoints-directory>/runs/`. Resuming creates a new run and restores model,
-optimizer, mixed-precision scaler, completed epoch, and metric history from `latest.pt`. Use the same
-dataset, preprocessing, and seed.
+optimizer, mixed-precision scaler, scheduler, completed epoch, and metric history from `latest.pt`.
+Use matching loss settings, batch size, patient assignments, preprocessing, and seed.
 
 - `best.pt`: weights from the lowest validation loss, used for inference.
 - `latest.pt`: complete state from the last epoch, used to resume training.
-- `run.json`: run configuration and final test metrics.
-- `metrics.json` and `metrics.png`: epoch history and training curves.
+- `run.json`: training settings and patient assignments, followed by best-epoch and test results.
+- `metrics.json` and `metrics.png`: per-epoch losses, learning rates, metrics, and training curves.
 - `validation_comparison.png` and `test_comparison.png`: four fixed examples from each split.
 
 The `best/` and `latest/` folders point to completed runs. Never resume a checkpoint trained with a

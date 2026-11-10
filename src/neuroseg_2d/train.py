@@ -18,6 +18,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -26,9 +27,15 @@ from neuroseg_2d.constants import (
     CHECKPOINTS_DIR,
     EPOCHS,
     LEARNING_RATE,
+    LR_FACTOR,
+    LR_PATIENCE,
+    MIN_LR,
     NUM_WORKERS,
+    POS_WEIGHT,
     SEED,
     THRESHOLD,
+    TVERSKY_ALPHA,
+    TVERSKY_BETA,
     WEIGHT_DECAY,
 )
 from neuroseg_2d.data import BraTSSliceDataset, PatientSliceSampler, discover, split
@@ -76,7 +83,9 @@ def resume_run(
     model: nn.Module,
     optimizer: Optimizer,
     scaler: torch.amp.GradScaler,
+    scheduler: ReduceLROnPlateau,
     device: torch.device,
+    config: dict[str, object],
 ) -> Result:
     """Copy one source run and restore its latest training state.
 
@@ -86,23 +95,28 @@ def resume_run(
         model: Model receiving saved weights.
         optimizer: Optimizer receiving saved state.
         scaler: AMP scaler receiving saved state.
+        scheduler: Scheduler to regulate learning rate.
         device: Device used to map checkpoint tensors.
+        config: Requested loss, scheduler and patient assignments.
 
     Returns:
         Restored epoch, best-result tracking, and metric history.
     """
-    # Copy source artifacts before changing continuation results.
-    shutil.copytree(checkpoint_file.parent, run_dir, dirs_exist_ok=True)
-
-    # Restore latest model, optimizer, scaler, and epoch tracking.
+    # Reject incompatible objectives or patient splits before copying artifacts.
     checkpoint: dict[str, object] = torch.load(
-        run_dir / "latest.pt",
+        checkpoint_file,
         map_location=device,
         weights_only=True,
     )
+    if checkpoint.get("config") != config:
+        raise ValueError("Checkpoint loss, scheduler or patient split differs; start a fresh run")
+    shutil.copytree(checkpoint_file.parent, run_dir, dirs_exist_ok=True)
+
+    # Restore training state, including the next learning-rate decision.
     model.load_state_dict(cast(dict[str, Tensor], checkpoint["model"]))
     optimizer.load_state_dict(cast(dict[str, object], checkpoint["optimizer"]))
     scaler.load_state_dict(cast(dict[str, object], checkpoint["scaler"]))
+    scheduler.load_state_dict(cast(dict[str, object], checkpoint["scheduler"]))
 
     # Restore metric history already stored in current schema.
     epoch_metrics = cast(
@@ -118,28 +132,31 @@ def resume_run(
     )
 
 
-class DiceBCELoss(nn.Module):
-    """Combine all-pixel BCE and target-present-batch soft Dice equally."""
+class TverskyBCELoss(nn.Module):
+    """Combine positive-weighted BCE and target-present-batch soft Tversky equally."""
 
     def __init__(self, smooth: float = 1e-6) -> None:
         super().__init__()
         self.smooth = smooth
-        self.bce = nn.BCEWithLogitsLoss()
+        self.bce = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(POS_WEIGHT))
 
     def forward(self, logits: Tensor, targets: Tensor) -> Tensor:
         """Return hybrid loss; a target-empty batch contributes BCE only."""
-        # Pool float32 overlap across the batch; skip Dice when the complete target is empty.
+        # Pool soft counts across the batch; penalize missed tumor more than false positives.
         logits = logits.float()
         targets = targets.float()
         probs = torch.sigmoid(logits)
-        intersection = (probs * targets).sum()
-        cardinality = (probs + targets).sum()
-        dice_loss = 1 - (2 * intersection + self.smooth) / (cardinality + self.smooth)
-        dice_loss *= targets.any()
+        tp = (probs * targets).sum()
+        fp = (probs * (1 - targets)).sum()
+        fn = ((1 - probs) * targets).sum()
+        tversky_loss = 1 - (tp + self.smooth) / (
+            tp + TVERSKY_ALPHA * fp + TVERSKY_BETA * fn + self.smooth
+        )
+        tversky_loss *= targets.any()  # Empty-target batches use BCE supervision only.
 
         # Apply BCE to every pixel, including empty slices, and combine both losses equally.
         bce_loss = self.bce(logits, targets)
-        return 0.5 * (bce_loss + dice_loss)
+        return 0.5 * (bce_loss + tversky_loss)
 
 
 def train(
@@ -150,11 +167,13 @@ def train(
     loss_fn: nn.Module,
     optimizer: Optimizer,
     scaler: torch.amp.GradScaler,
+    scheduler: ReduceLROnPlateau,
     device: torch.device,
     epochs: int,
     threshold: float,
     run_dir: Path,
     result: Result,
+    config: dict[str, object],
 ) -> Result:
     """Train all requested epochs and return one result summary."""
 
@@ -176,6 +195,7 @@ def train(
 
         # Initialize epoch totals and progress bar.
         train_loss = 0.0
+        learning_rate = float(optimizer.param_groups[0]["lr"])
         progress = tqdm(
             train_loader,
             desc=f"Epoch {epoch}/{last_epoch}",
@@ -221,11 +241,15 @@ def train(
                 "epoch": epoch,
                 "train_loss": train_loss,
                 "validation_loss": val_loss,
+                "learning_rate": learning_rate,
                 "slice": val_metrics["slice"],
                 "patient": val_metrics["patient"],
             }
         )
         print_metrics(epoch_metrics)
+
+        # Adjust the next epoch's learning rate before saving resumable state.
+        scheduler.step(val_loss)
 
         # Update best tracking and keep best weights dedicated to inference.
         improved = val_loss < best_val_loss
@@ -239,9 +263,11 @@ def train(
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scaler": scaler.state_dict(),
+            "scheduler": scheduler.state_dict(),
             "epoch": epoch,
             "best_epoch": best_epoch,
             "best_validation_loss": best_val_loss,
+            "config": config,
         }
         torch.save(latest, run_dir / "latest.pt")
         save_metrics(run_dir, epoch_metrics)
@@ -416,15 +442,44 @@ def main() -> None:
         pin_memory=torch.cuda.is_available(),
     )
 
-    # Build model, loss, optimizer and scaler.
+    # Build model, loss, optimizer, scheduler and scaler.
     model = UNet(in_channels=1, out_channels=1).to(DEVICE)
-    loss_fn = DiceBCELoss()
+    loss_fn = TverskyBCELoss().to(DEVICE)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
         weight_decay=WEIGHT_DECAY,
     )
     scaler = torch.amp.GradScaler(DEVICE.type, enabled=DEVICE.type == "cuda")
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode="min", factor=LR_FACTOR, patience=LR_PATIENCE, min_lr=MIN_LR
+    )
+
+    # Record the objective and exact split before training or restoring a checkpoint.
+    config: dict[str, object] = {
+        "loss": {
+            "name": "TverskyBCE",
+            "alpha": TVERSKY_ALPHA,
+            "beta": TVERSKY_BETA,
+            "pos_weight": POS_WEIGHT,
+        },
+        "scheduler": {
+            "name": "ReduceLROnPlateau",
+            "factor": LR_FACTOR,
+            "patience": LR_PATIENCE,
+            "min_lr": MIN_LR,
+        },
+        "seed": SEED,
+        "batch_size": args.batch_size,
+        "patients": {
+            name: [f"{patient.grade}/{patient.id}" for patient in group]
+            for name, group in (
+                ("train", train_patients),
+                ("validation", val_patients),
+                ("test", test_patients),
+            )
+        },
+    }
 
     # Create a new run with fresh state, then restore latest state when resuming.
     run_dir = create_run_dir(args.checkpoints_dir)
@@ -435,7 +490,25 @@ def main() -> None:
         epoch_metrics=[],
     )
     if args.resume_checkpoint is not None:
-        result = resume_run(args.resume_checkpoint, run_dir, model, optimizer, scaler, DEVICE)
+        result = resume_run(
+            args.resume_checkpoint, run_dir, model, optimizer, scaler, scheduler, DEVICE, config
+        )
+
+    # Save fixed configuration now; final results remain empty until training finishes.
+    report: dict[str, object] = {
+        **config,
+        "best_epoch": None,
+        "best_validation_loss": None,
+        "data_dir": str(args.data_dir),
+        "device": str(DEVICE),
+        "epochs": args.epochs,
+        "learning_rate": float(optimizer.param_groups[0]["lr"]),
+        "resume_checkpoint": str(args.resume_checkpoint) if args.resume_checkpoint else None,
+        "num_parameters": sum(parameter.numel() for parameter in model.parameters()),
+        "threshold": args.threshold,
+        "test_metrics": None,
+    }
+    save_report(run_dir, report=report)
 
     # Train requested additional epochs and persist best/latest state.
     result = train(
@@ -446,11 +519,13 @@ def main() -> None:
         loss_fn=loss_fn,
         optimizer=optimizer,
         scaler=scaler,
+        scheduler=scheduler,
         device=DEVICE,
         epochs=args.epochs,
         threshold=args.threshold,
         run_dir=run_dir,
         result=result,
+        config=config,
     )
 
     # Load the best weights and evaluate on the test set.
@@ -464,20 +539,12 @@ def main() -> None:
     print_metrics([test_metrics])
 
     # Save run report, metrics, and run references.
-    report: dict[str, object] = {
-        "batch_size": args.batch_size,
-        "best_epoch": result.best_epoch,
-        "best_validation_loss": result.best_val_loss,
-        "data_dir": str(args.data_dir),
-        "device": str(DEVICE),
-        "epochs": args.epochs,
-        "learning_rate": float(optimizer.param_groups[0]["lr"]),
-        "resume_checkpoint": str(args.resume_checkpoint) if args.resume_checkpoint else None,
-        "num_parameters": sum(parameter.numel() for parameter in model.parameters()),
-        "seed": SEED,
-        "threshold": args.threshold,
-        "test_metrics": test_metrics,
-    }
+    report.update(
+        best_epoch=result.best_epoch,
+        best_validation_loss=result.best_val_loss,
+        learning_rate=float(optimizer.param_groups[0]["lr"]),
+        test_metrics=test_metrics,
+    )
     save_report(run_dir, report=report)
     save_metrics(run_dir, result.epoch_metrics)
     update_run_reference(

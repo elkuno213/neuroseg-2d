@@ -143,10 +143,7 @@ def split(
     if not patients:
         raise ValueError("Patients must be not empty")
 
-    # First split: keep 75% for training and 25% for later division.
     grades = [patient.grade for patient in patients]
-
-    # Second split: divide the temporary 25% equally into validation and test.
     train_patients, other_patients = train_test_split(
         patients,
         test_size=TEST_RATIO + VALIDATION_RATIO,
