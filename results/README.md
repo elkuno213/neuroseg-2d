@@ -43,10 +43,10 @@ computed over each patient's volume; slice scores average individual slices.
 
 | Split | Scope | Dice | IoU | Recall | Precision |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Validation | Slice | 0.673384 | 0.594826 | 0.842177 | 0.680093 |
-| Validation | Patient | 0.842753 | 0.737808 | 0.926838 | 0.784222 |
-| Test | Slice | 0.663546 | 0.586830 | 0.845390 | 0.665887 |
-| Test | Patient | 0.856881 | 0.757431 | 0.936557 | 0.802112 |
+| Validation | Slice | 67.34% | 59.48% | 84.22% | 68.01% |
+| Validation | Patient | 84.28% | 73.78% | 92.68% | 78.42% |
+| Test | Slice | 66.35% | 58.68% | 84.54% | 66.59% |
+| Test | Patient | 85.69% | 75.74% | 93.66% | 80.21% |
 
 Patient-wise validation precision passes the project requirement; recall remains below target.
 Checks use strict comparisons on unrounded values.
