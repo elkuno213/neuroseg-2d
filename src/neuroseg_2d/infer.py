@@ -12,6 +12,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
+from nibabel.orientations import apply_orientation, io_orientation, ornt_transform
 from torch import Tensor, nn
 
 from neuroseg_2d.constants import BATCH_SIZE, THRESHOLD
@@ -71,7 +72,6 @@ def main() -> None:
 
     # Preserve source geometry, then canonicalize the working image for training preprocessing.
     src_nii = nib.Nifti1Image.from_filename(args.image)
-    src_shape = tuple(src_nii.shape)
     src_aff = np.asarray(src_nii.affine)
     src_header = src_nii.header.copy()
     work_nii = nib.as_closest_canonical(src_nii)
@@ -94,9 +94,11 @@ def main() -> None:
     )
     model.load_state_dict(weights)
 
-    # Predict cropped probabilities, restore source indices, then save one binary uint8 NIfTI.
+    # Restore canonical crop, then return its axes to source orientation before saving.
     probs = predict(model, dst_img, device, args.batch_size)
-    mask = postprocess(probs, src_shape, args.threshold)
+    mask = postprocess(probs, tuple(work_nii.shape), args.threshold)
+    orientation = ornt_transform(io_orientation(work_nii.affine), io_orientation(src_aff))
+    mask = apply_orientation(mask, orientation)
     src_header.set_data_dtype(np.uint8)
     nib.save(nib.Nifti1Image(mask, src_aff, src_header), args.output)
 
@@ -110,7 +112,7 @@ def main() -> None:
     # Open optional viewer only after durable output and normal summary are complete.
     if args.gui:
         src_img = src_nii.get_fdata(dtype=np.float32, caching="unchanged")
-        target, target_message = load_ground_truth(args.image, src_shape, src_aff)
+        target, target_message = load_ground_truth(args.image, tuple(src_nii.shape), src_aff)
         if target_message is not None:
             print(target_message)
         patient_name = (
